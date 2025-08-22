@@ -9,7 +9,7 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 const db = new sqlite3.Database('./loyalty.db');
 
 db.run(`CREATE TABLE IF NOT EXISTS users (
-  telegram_id TEXT PRIMARY KEY,
+  telegram_id INTEGER PRIMARY KEY,
   discount_card TEXT,
   points INTEGER DEFAULT 0,
   purchases TEXT DEFAULT '',
@@ -18,27 +18,27 @@ db.run(`CREATE TABLE IF NOT EXISTS users (
 )`);
 
 db.run(`CREATE TABLE IF NOT EXISTS sellers (
-  telegram_id TEXT PRIMARY KEY
+  telegram_id INTEGER PRIMARY KEY
 )`);
 
 db.run(`CREATE TABLE IF NOT EXISTS admins (
-  telegram_id TEXT PRIMARY KEY
+  telegram_id INTEGER PRIMARY KEY
 )`);
 
 db.run(`INSERT OR IGNORE INTO admins (telegram_id) VALUES (?)`, [ADMIN_ID]);
 
 // Клавиатуры
 function numberKeyboard() {
-  const keyboard = [];
-  for (let i = 0; i < 10; i += 3) {
-    keyboard.push([String(i), String(i + 1), String(i + 2)].map(n => ({ text: n })));
-  }
-  keyboard.push([{ text: 'ОК' }]);
-  return { reply_markup: { keyboard, resize_keyboard: true } };
+  return { reply_markup: { keyboard: [
+    ['0', '1', '2'],
+    ['3', '4', '5'],
+    ['6', '7', '8'],
+    ['9', 'ОК']
+  ], resize_keyboard: true } };
 }
 
 function clientKeyboard() {
-  return { reply_markup: { keyboard: [['/profile', '/order']], resize_keyboard: true } };
+  return { reply_markup: { keyboard: [['/profile', '/order'], ['/my_discount_card']], resize_keyboard: true } };
 }
 
 function sellerKeyboard() {
@@ -50,15 +50,18 @@ function adminKeyboard() {
 }
 
 function deliveryKeyboard() {
-  return { reply_markup: { inline_keyboard: [['На дом', 'delivery_home'], ['В магазин', 'delivery_shop']] } };
+  return { reply_markup: { inline_keyboard: [
+    [{ text: 'На дом', callback_data: 'delivery_home' }],
+    [{ text: 'В магазин', callback_data: 'delivery_shop' }]
+  ] } };
 }
 
 function goodsKeyboard() {
   return { reply_markup: { inline_keyboard: [
-    ['Алмазы (10 шт) - 100 руб', 'goods_diamonds'],
-    ['Броня (железная) - 200 руб', 'goods_armor'],
-    ['Меч (алмазный) - 150 руб', 'goods_sword']
-  ].map(([text, data]) => [{ text, callback_data: data }]) } };
+    [{ text: 'Алмазы (10 шт) - 100 руб', callback_data: 'goods_diamonds' }],
+    [{ text: 'Броня (железная) - 200 руб', callback_data: 'goods_armor' }],
+    [{ text: 'Меч (алмазный) - 150 руб', callback_data: 'goods_sword' }]
+  ] } };
 }
 
 // Утилиты
@@ -82,83 +85,158 @@ function updateDiscountLevel(telegramId, totalSpent) {
   db.run(`UPDATE users SET discount_level = ? WHERE telegram_id = ?`, [level, telegramId]);
 }
 
-// /start
+// Состояния
+const states = {};
+
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
-  if (msg.from.id === ADMIN_ID) {
+  const userId = msg.from.id;
+  if (userId === ADMIN_ID) {
     bot.sendMessage(chatId, 'Добро пожаловать, админ!', adminKeyboard());
-  } else if (db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [msg.from.id])) {
+  } else if (db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [userId])) {
     bot.sendMessage(chatId, 'Добро пожаловать, продавец! Введите пароль:', numberKeyboard());
+    states[chatId] = 'seller_login';
   } else {
-    bot.sendMessage(chatId, 'Добро пожаловать, клиент!', clientKeyboard());
-  }
-});
-
-// Логин продавца
-let sellerPasswordInput = {};
-bot.on('message', (msg) => {
-  if (sellerPasswordInput[msg.chat.id] && msg.text !== 'ОК') {
-    sellerPasswordInput[msg.chat.id] += msg.text;
-    return;
-  }
-  if (msg.text === 'ОК' && sellerPasswordInput[msg.chat.id]) {
-    if (sellerPasswordInput[msg.chat.id] === SELLER_PASSWORD) {
-      bot.sendMessage(msg.chat.id, 'Логин успешный!', sellerKeyboard());
-    } else {
-      bot.sendMessage(msg.chat.id, 'Неверный пароль!', numberKeyboard());
-    }
-    delete sellerPasswordInput[msg.chat.id];
-    return;
-  }
-  if (!sellerPasswordInput[msg.chat.id] && msg.text.match(/^\d$/)) {
-    sellerPasswordInput[msg.chat.id] = msg.text;
-    bot.sendMessage(msg.chat.id, 'Введите пароль (ещё цифры):', numberKeyboard());
-  }
-});
-
-// Регистрация клиента
-bot.onText(/\/register_client/, (msg) => {
-  if (db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [msg.from.id])) {
-    bot.sendMessage(msg.chat.id, 'Введите @username клиента:', { reply_markup: { remove_keyboard: true } });
-    bot.once('message', (msg2) => {
-      const username = msg2.text.replace('@', '');
-      const discountCard = Math.floor(10000000 + Math.random() * 90000000).toString(); // 8-значный код
-      db.run(`INSERT OR IGNORE INTO users (telegram_id, discount_card, points, total_spent, discount_level) VALUES (?, ?, ?, ?, ?)`,
-        [username, discountCard, 0, 0, 1], () => {
-          bot.sendMessage(msg.chat.id, `Клиент ${username} зарегистрирован! Дисконтная карта: ${discountCard} (скидка 1%, бонусы 0)`);
-        });
+    db.get(`SELECT telegram_id FROM users WHERE telegram_id = ?`, [userId], (err, row) => {
+      if (row) {
+        bot.sendMessage(chatId, 'Добро пожаловать, клиент!', clientKeyboard());
+      } else {
+        bot.sendMessage(chatId, 'Вы не зарегистрированы. Обратитесь к продавцу.', clientKeyboard());
+      }
     });
   }
 });
 
-// Профиль клиента
-bot.onText(/\/profile/, (msg) => {
-  const username = msg.from.username || '';
-  db.get(`SELECT points, purchases, discount_card, discount_level, total_spent FROM users WHERE telegram_id = ?`, [username], (err, row) => {
-    if (row) {
-      const discount = getDiscount(row.discount_level);
-      bot.sendMessage(msg.chat.id, `Ваш профиль:\nПокупки: ${row.purchases || 'Нет'}\nБонусы: ${row.points} (1 бонус = 10 монет)\nСкидка: ${discount * 100}%\nПотрачено: ${row.total_spent} монет\nКарта: ${row.discount_card}`, clientKeyboard());
-    } else {
-      bot.sendMessage(msg.chat.id, 'Вы не зарегистрированы!');
+bot.on('message', (msg) => {
+  const chatId = msg.chat.id;
+  const userId = msg.from.id;
+  if (states[chatId] === 'seller_login') {
+    if (msg.text === 'ОК') {
+      const password = states[chatId].input || '';
+      if (password === SELLER_PASSWORD) {
+        bot.sendMessage(chatId, 'Логин успешный!', sellerKeyboard());
+      } else {
+        bot.sendMessage(chatId, 'Неверный пароль!', numberKeyboard());
+      }
+      delete states[chatId];
+    } else if (msg.text.match(/^\d$/)) {
+      states[chatId] = states[chatId] || { input: '' };
+      states[chatId].input += msg.text;
+      bot.sendMessage(chatId, `Введите пароль (введено: ${states[chatId].input})`, numberKeyboard());
     }
-  });
-});
+    return;
+  }
 
-// Заказ
-bot.onText(/\/order/, (msg) => {
-  bot.sendMessage(msg.chat.id, 'Выберите товар:', goodsKeyboard());
+  if (msg.text === '/register_client' && db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [userId])) {
+    bot.sendMessage(chatId, 'Введите Telegram ID клиента:', { reply_markup: { remove_keyboard: true } });
+    states[chatId] = 'register_client';
+  } else if (states[chatId] === 'register_client') {
+    const clientId = parseInt(msg.text);
+    if (!isNaN(clientId)) {
+      const discountCard = Math.floor(10000000 + Math.random() * 90000000).toString();
+      db.run(`INSERT OR IGNORE INTO users (telegram_id, discount_card, points, total_spent, discount_level) VALUES (?, ?, ?, ?, ?)`,
+        [clientId, discountCard, 0, 0, 1], () => {
+          bot.sendMessage(chatId, `Клиент ${clientId} зарегистрирован! Дисконтная карта: ${discountCard} (скидка 1%, бонусы 0)`, sellerKeyboard());
+        });
+    } else {
+      bot.sendMessage(chatId, 'Неверный ID!', sellerKeyboard());
+    }
+    delete states[chatId];
+  }
+
+  if (msg.text === '/profile') {
+    db.get(`SELECT points, purchases, discount_card, discount_level, total_spent FROM users WHERE telegram_id = ?`, [userId], (err, row) => {
+      if (row) {
+        const discount = getDiscount(row.discount_level);
+        bot.sendMessage(chatId, `Ваш профиль:\nПокупки: ${row.purchases || 'Нет'}\nБонусы: ${row.points} (1 бонус = 10 монет)\nСкидка: ${discount * 100}%\nПотрачено: ${row.total_spent} монет\nКарта: ${row.discount_card}`, clientKeyboard());
+      } else {
+        bot.sendMessage(chatId, 'Вы не зарегистрированы! Обратитесь к продавцу.', clientKeyboard());
+      }
+    });
+  }
+
+  if (msg.text === '/order') {
+    bot.sendMessage(chatId, 'Выберите товар:', goodsKeyboard());
+  }
+
+  if (msg.text === '/my_discount_card') {
+    db.get(`SELECT discount_card FROM users WHERE telegram_id = ?`, [userId], (err, row) => {
+      if (row) {
+        bot.sendMessage(chatId, `Ваша дисконтная карта: ${row.discount_card}`, clientKeyboard());
+      } else {
+        bot.sendMessage(chatId, 'У вас нет карты! Обратитесь к продавцу.', clientKeyboard());
+      }
+    });
+  }
+
+  if (msg.text === '/generate_card' && db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [userId])) {
+    bot.sendMessage(chatId, 'Введите Telegram ID клиента:', { reply_markup: { remove_keyboard: true } });
+    states[chatId] = 'generate_card';
+  } else if (states[chatId] === 'generate_card') {
+    const clientId = parseInt(msg.text);
+    if (!isNaN(clientId)) {
+      const discountCard = Math.floor(10000000 + Math.random() * 90000000).toString();
+      db.run(`UPDATE users SET discount_card = ?, points = 0, discount_level = 1 WHERE telegram_id = ?`,
+        [discountCard, clientId], () => {
+          bot.sendMessage(chatId, `Дисконтная карта для ${clientId}: ${discountCard} (скидка 1%, бонусы 0)`, sellerKeyboard());
+        });
+    } else {
+      bot.sendMessage(chatId, 'Неверный ID!', sellerKeyboard());
+    }
+    delete states[chatId];
+  }
+
+  if (msg.text === '/calculate_sum' && db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [userId])) {
+    bot.sendMessage(chatId, 'Есть ли у клиента дисконтная карта? (да/нет)', { reply_markup: { remove_keyboard: true } });
+    states[chatId] = 'calculate_sum_step1';
+  } else if (states[chatId] === 'calculate_sum_step1') {
+    if (msg.text.toLowerCase() === 'да') {
+      bot.sendMessage(chatId, 'Введите код карты:');
+      states[chatId] = 'calculate_sum_step2';
+    } else {
+      bot.sendMessage(chatId, 'Введите стоимости товаров через запятую (например: 100,200,300):');
+      states[chatId] = 'calculate_sum_step3';
+    }
+  } else if (states[chatId] === 'calculate_sum_step2') {
+    const card = msg.text;
+    db.get(`SELECT telegram_id, points, discount_level, total_spent FROM users WHERE discount_card = ?`, [card], (err, row) => {
+      if (row) {
+        bot.sendMessage(chatId, 'Введите стоимости товаров через запятую (например: 100,200,300):');
+        states[chatId] = { step: 'calculate_sum_step3', userId: row.telegram_id, points: row.points, discountLevel: row.discount_level, totalSpent: row.total_spent };
+      } else {
+        bot.sendMessage(chatId, 'Карта не найдена!', sellerKeyboard());
+        delete states[chatId];
+      }
+    });
+  } else if (states[chatId] && states[chatId].step === 'calculate_sum_step3') {
+    const prices = msg.text.split(',').map(Number).filter(n => !isNaN(n));
+    if (prices.length) {
+      const total = prices.reduce((a, b) => a + b, 0);
+      const discount = getDiscount(states[chatId].discountLevel);
+      const discountAmount = total * discount;
+      const finalTotal = total - discountAmount;
+      const bonus = getBonusAmount(states[chatId].totalSpent + total);
+      db.run(`UPDATE users SET points = ?, total_spent = ? WHERE telegram_id = ?`,
+        [states[chatId].points + bonus, states[chatId].totalSpent + total, states[chatId].userId], () => {
+          bot.sendMessage(chatId, `Сумма: ${total} монет\nСкидка: ${discount * 100}% (${discountAmount} монет)\nИтог: ${finalTotal} монет\nБонусы: +${bonus} (итого ${states[chatId].points + bonus})`, sellerKeyboard());
+        });
+    } else {
+      bot.sendMessage(chatId, 'Неверный формат!', sellerKeyboard());
+    }
+    delete states[chatId];
+  }
 });
 
 bot.on('callback_query', (query) => {
   const chatId = query.message.chat.id;
   const msgId = query.message.message_id;
+  const userId = query.from.id;
   if (query.data.startsWith('goods_')) {
     const good = query.data.replace('goods_', '');
     const prices = { diamonds: 100, armor: 200, sword: 150 };
     bot.editMessageText(`Вы выбрали: ${query.message.text.split('-')[0].trim()} (${prices[good]} монет). Выберите доставку:`, { chat_id: chatId, message_id: msgId, ...deliveryKeyboard() });
   } else if (query.data.startsWith('delivery_')) {
-    const username = query.from.username || '';
-    db.get(`SELECT total_spent, points FROM users WHERE telegram_id = ?`, [username], (err, row) => {
+    db.get(`SELECT total_spent, points FROM users WHERE telegram_id = ?`, [userId], (err, row) => {
       if (row) {
         const delivery = query.data.replace('delivery_', '');
         const prices = { diamonds: 100, armor: 200, sword: 150 };
@@ -166,82 +244,17 @@ bot.on('callback_query', (query) => {
         const price = prices[good.replace(' ', '_').replace('(', '').replace(')', '')];
         const newTotalSpent = row.total_spent + price;
         const bonus = getBonusAmount(newTotalSpent);
-        updateDiscountLevel(username, newTotalSpent);
+        updateDiscountLevel(userId, newTotalSpent);
         db.run(`UPDATE users SET total_spent = ?, points = points + ?, purchases = purchases || ? WHERE telegram_id = ?`,
-          [newTotalSpent, bonus, `\n${query.message.text} | ${delivery}`, username], () => {
+          [newTotalSpent, bonus, `\n${query.message.text} | ${delivery}`, userId], () => {
             bot.editMessageText(`Заказ подтверждён! Доставка: ${delivery}\nБонусы: +${bonus} (итого ${row.points + bonus})`, { chat_id: chatId, message_id: msgId });
-            SELLERS.forEach(sellerId => bot.sendMessage(sellerId, `Новый заказ от ${username}: ${query.message.text} | ${delivery}`));
+            SELLERS.forEach(sellerId => bot.sendMessage(sellerId, `Новый заказ от ${userId}: ${query.message.text} | ${delivery}`));
           });
       }
     });
   }
 });
 
-// Генерация дисконтной карты
-bot.onText(/\/generate_card/, (msg) => {
-  if (db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [msg.from.id])) {
-    bot.sendMessage(msg.chat.id, 'Введите @username клиента:', { reply_markup: { remove_keyboard: true } });
-    bot.once('message', (msg2) => {
-      const username = msg2.text.replace('@', '');
-      const discountCard = Math.floor(10000000 + Math.random() * 90000000).toString();
-      db.run(`UPDATE users SET discount_card = ?, points = 0, discount_level = 1 WHERE telegram_id = ?`,
-        [discountCard, username], () => {
-          bot.sendMessage(msg.chat.id, `Дисконтная карта для ${username}: ${discountCard} (скидка 1%, бонусы 0)`);
-        });
-    });
-  }
-});
-
-// Расчёт суммы
-bot.onText(/\/calculate_sum/, (msg) => {
-  if (db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [msg.from.id])) {
-    bot.sendMessage(msg.chat.id, 'Есть ли у клиента дисконтная карта? (да/нет)', { reply_markup: { remove_keyboard: true } });
-    bot.once('message', (msg2) => {
-      if (msg2.text.toLowerCase() === 'да') {
-        bot.sendMessage(msg.chat.id, 'Введите код карты:');
-        bot.once('message', (msg3) => {
-          const card = msg3.text;
-          db.get(`SELECT telegram_id, points, discount_level, total_spent FROM users WHERE discount_card = ?`, [card], (err, row) => {
-            if (row) {
-              bot.sendMessage(msg.chat.id, 'Введите стоимости товаров через запятую (например: 100,200,300):');
-              bot.once('message', (msg4) => {
-                const prices = msg4.text.split(',').map(Number).filter(n => !isNaN(n));
-                if (prices.length) {
-                  const total = prices.reduce((a, b) => a + b, 0);
-                  const discount = getDiscount(row.discount_level);
-                  const discountAmount = total * discount;
-                  const finalTotal = total - discountAmount;
-                  const bonus = getBonusAmount(row.total_spent + total);
-                  db.run(`UPDATE users SET points = points + ?, total_spent = total_spent + ? WHERE telegram_id = ?`,
-                    [bonus, total, row.telegram_id], () => {
-                      bot.sendMessage(msg.chat.id, `Сумма: ${total} монет\nСкидка: ${discount * 100}% (${discountAmount} монет)\nИтог: ${finalTotal} монет\nБонусы: +${bonus} (итого ${row.points + bonus})`);
-                    });
-                } else {
-                  bot.sendMessage(msg.chat.id, 'Неверный формат!');
-                }
-              });
-            } else {
-              bot.sendMessage(msg.chat.id, 'Карта не найдена!');
-            }
-          });
-        });
-      } else {
-        bot.sendMessage(msg.chat.id, 'Введите стоимости товаров через запятую (например: 100,200,300):');
-        bot.once('message', (msg3) => {
-          const prices = msg3.text.split(',').map(Number).filter(n => !isNaN(n));
-          if (prices.length) {
-            const total = prices.reduce((a, b) => a + b, 0);
-            bot.sendMessage(msg.chat.id, `Сумма без скидки: ${total} монет`);
-          } else {
-            bot.sendMessage(msg.chat.id, 'Неверный формат!');
-          }
-        });
-      }
-    });
-  }
-});
-
-// Просмотр всех операций (админ)
 bot.onText(/\/view_all/, (msg) => {
   if (msg.from.id === ADMIN_ID) {
     db.all(`SELECT telegram_id, points, purchases, total_spent, discount_level FROM users`, [], (err, rows) => {
@@ -254,7 +267,6 @@ bot.onText(/\/view_all/, (msg) => {
   }
 });
 
-// Добавление/удаление продавца (админ)
 bot.onText(/\/add_seller/, (msg) => {
   if (msg.from.id === ADMIN_ID) {
     bot.sendMessage(msg.chat.id, 'Введите Telegram ID продавца:');
