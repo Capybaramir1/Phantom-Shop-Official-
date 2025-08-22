@@ -42,7 +42,7 @@ function clientKeyboard() {
 }
 
 function sellerKeyboard() {
-  return { reply_markup: { keyboard: [['/register_client', '/addpoints'], ['/discount', '/calculate_sum'], ['/generate_card']], resize_keyboard: true } };
+  return { reply_markup: { keyboard: [['/register_client', '/generate_card'], ['/calculate_sum']], resize_keyboard: true } };
 }
 
 function adminKeyboard() {
@@ -95,7 +95,7 @@ bot.onText(/\/start/, (msg) => {
     bot.sendMessage(chatId, 'Добро пожаловать, админ!', adminKeyboard());
   } else if (db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [userId])) {
     bot.sendMessage(chatId, 'Добро пожаловать, продавец! Введите пароль:', numberKeyboard());
-    states[chatId] = 'seller_login';
+    states[chatId] = { state: 'seller_login', input: '' };
   } else {
     db.get(`SELECT telegram_id FROM users WHERE telegram_id = ?`, [userId], (err, row) => {
       if (row) {
@@ -110,36 +110,35 @@ bot.onText(/\/start/, (msg) => {
 bot.on('message', (msg) => {
   const chatId = msg.chat.id;
   const userId = msg.from.id;
-  if (states[chatId] === 'seller_login') {
+
+  if (states[chatId] && states[chatId].state === 'seller_login') {
     if (msg.text === 'ОК') {
-      const password = states[chatId].input || '';
-      if (password === SELLER_PASSWORD) {
+      if (states[chatId].input === SELLER_PASSWORD) {
         bot.sendMessage(chatId, 'Логин успешный!', sellerKeyboard());
       } else {
         bot.sendMessage(chatId, 'Неверный пароль!', numberKeyboard());
       }
       delete states[chatId];
     } else if (msg.text.match(/^\d$/)) {
-      states[chatId] = states[chatId] || { input: '' };
       states[chatId].input += msg.text;
       bot.sendMessage(chatId, `Введите пароль (введено: ${states[chatId].input})`, numberKeyboard());
     }
     return;
   }
 
-  if (msg.text === '/register_client' && db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [userId])) {
+  if (msg.text === '/register_client' && (userId === ADMIN_ID || db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [userId]))) {
     bot.sendMessage(chatId, 'Введите Telegram ID клиента:', { reply_markup: { remove_keyboard: true } });
-    states[chatId] = 'register_client';
-  } else if (states[chatId] === 'register_client') {
+    states[chatId] = { state: 'register_client' };
+  } else if (states[chatId] && states[chatId].state === 'register_client') {
     const clientId = parseInt(msg.text);
     if (!isNaN(clientId)) {
       const discountCard = Math.floor(10000000 + Math.random() * 90000000).toString();
       db.run(`INSERT OR IGNORE INTO users (telegram_id, discount_card, points, total_spent, discount_level) VALUES (?, ?, ?, ?, ?)`,
         [clientId, discountCard, 0, 0, 1], () => {
-          bot.sendMessage(chatId, `Клиент ${clientId} зарегистрирован! Дисконтная карта: ${discountCard} (скидка 1%, бонусы 0)`, sellerKeyboard());
+          bot.sendMessage(chatId, `Клиент ${clientId} зарегистрирован! Дисконтная карта: ${discountCard} (скидка 1%, бонусы 0)`, userId === ADMIN_ID ? adminKeyboard() : sellerKeyboard());
         });
     } else {
-      bot.sendMessage(chatId, 'Неверный ID!', sellerKeyboard());
+      bot.sendMessage(chatId, 'Неверный ID!', userId === ADMIN_ID ? adminKeyboard() : sellerKeyboard());
     }
     delete states[chatId];
   }
@@ -156,7 +155,13 @@ bot.on('message', (msg) => {
   }
 
   if (msg.text === '/order') {
-    bot.sendMessage(chatId, 'Выберите товар:', goodsKeyboard());
+    db.get(`SELECT telegram_id FROM users WHERE telegram_id = ?`, [userId], (err, row) => {
+      if (row) {
+        bot.sendMessage(chatId, 'Выберите товар:', goodsKeyboard());
+      } else {
+        bot.sendMessage(chatId, 'Вы не зарегистрированы! Обратитесь к продавцу.', clientKeyboard());
+      }
+    });
   }
 
   if (msg.text === '/my_discount_card') {
@@ -169,46 +174,46 @@ bot.on('message', (msg) => {
     });
   }
 
-  if (msg.text === '/generate_card' && db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [userId])) {
+  if (msg.text === '/generate_card' && (userId === ADMIN_ID || db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [userId]))) {
     bot.sendMessage(chatId, 'Введите Telegram ID клиента:', { reply_markup: { remove_keyboard: true } });
-    states[chatId] = 'generate_card';
-  } else if (states[chatId] === 'generate_card') {
+    states[chatId] = { state: 'generate_card' };
+  } else if (states[chatId] && states[chatId].state === 'generate_card') {
     const clientId = parseInt(msg.text);
     if (!isNaN(clientId)) {
       const discountCard = Math.floor(10000000 + Math.random() * 90000000).toString();
       db.run(`UPDATE users SET discount_card = ?, points = 0, discount_level = 1 WHERE telegram_id = ?`,
         [discountCard, clientId], () => {
-          bot.sendMessage(chatId, `Дисконтная карта для ${clientId}: ${discountCard} (скидка 1%, бонусы 0)`, sellerKeyboard());
+          bot.sendMessage(chatId, `Дисконтная карта для ${clientId}: ${discountCard} (скидка 1%, бонусы 0)`, userId === ADMIN_ID ? adminKeyboard() : sellerKeyboard());
         });
     } else {
-      bot.sendMessage(chatId, 'Неверный ID!', sellerKeyboard());
+      bot.sendMessage(chatId, 'Неверный ID!', userId === ADMIN_ID ? adminKeyboard() : sellerKeyboard());
     }
     delete states[chatId];
   }
 
-  if (msg.text === '/calculate_sum' && db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [userId])) {
+  if (msg.text === '/calculate_sum' && (userId === ADMIN_ID || db.get(`SELECT telegram_id FROM sellers WHERE telegram_id = ?`, [userId]))) {
     bot.sendMessage(chatId, 'Есть ли у клиента дисконтная карта? (да/нет)', { reply_markup: { remove_keyboard: true } });
-    states[chatId] = 'calculate_sum_step1';
-  } else if (states[chatId] === 'calculate_sum_step1') {
+    states[chatId] = { state: 'calculate_sum_step1' };
+  } else if (states[chatId] && states[chatId].state === 'calculate_sum_step1') {
     if (msg.text.toLowerCase() === 'да') {
       bot.sendMessage(chatId, 'Введите код карты:');
-      states[chatId] = 'calculate_sum_step2';
+      states[chatId] = { state: 'calculate_sum_step2' };
     } else {
       bot.sendMessage(chatId, 'Введите стоимости товаров через запятую (например: 100,200,300):');
-      states[chatId] = 'calculate_sum_step3';
+      states[chatId] = { state: 'calculate_sum_step3' };
     }
-  } else if (states[chatId] === 'calculate_sum_step2') {
+  } else if (states[chatId] && states[chatId].state === 'calculate_sum_step2') {
     const card = msg.text;
     db.get(`SELECT telegram_id, points, discount_level, total_spent FROM users WHERE discount_card = ?`, [card], (err, row) => {
       if (row) {
+        states[chatId] = { state: 'calculate_sum_step3', userId: row.telegram_id, points: row.points, discountLevel: row.discount_level, totalSpent: row.total_spent };
         bot.sendMessage(chatId, 'Введите стоимости товаров через запятую (например: 100,200,300):');
-        states[chatId] = { step: 'calculate_sum_step3', userId: row.telegram_id, points: row.points, discountLevel: row.discount_level, totalSpent: row.total_spent };
       } else {
-        bot.sendMessage(chatId, 'Карта не найдена!', sellerKeyboard());
+        bot.sendMessage(chatId, 'Карта не найдена!', userId === ADMIN_ID ? adminKeyboard() : sellerKeyboard());
         delete states[chatId];
       }
     });
-  } else if (states[chatId] && states[chatId].step === 'calculate_sum_step3') {
+  } else if (states[chatId] && states[chatId].state === 'calculate_sum_step3') {
     const prices = msg.text.split(',').map(Number).filter(n => !isNaN(n));
     if (prices.length) {
       const total = prices.reduce((a, b) => a + b, 0);
@@ -218,12 +223,48 @@ bot.on('message', (msg) => {
       const bonus = getBonusAmount(states[chatId].totalSpent + total);
       db.run(`UPDATE users SET points = ?, total_spent = ? WHERE telegram_id = ?`,
         [states[chatId].points + bonus, states[chatId].totalSpent + total, states[chatId].userId], () => {
-          bot.sendMessage(chatId, `Сумма: ${total} монет\nСкидка: ${discount * 100}% (${discountAmount} монет)\nИтог: ${finalTotal} монет\nБонусы: +${bonus} (итого ${states[chatId].points + bonus})`, sellerKeyboard());
+          bot.sendMessage(chatId, `Сумма: ${total} монет\nСкидка: ${discount * 100}% (${discountAmount} монет)\nИтог: ${finalTotal} монет\nБонусы: +${bonus} (итого ${states[chatId].points + bonus})`, userId === ADMIN_ID ? adminKeyboard() : sellerKeyboard());
         });
     } else {
-      bot.sendMessage(chatId, 'Неверный формат!', sellerKeyboard());
+      bot.sendMessage(chatId, 'Неверный формат!', userId === ADMIN_ID ? adminKeyboard() : sellerKeyboard());
     }
     delete states[chatId];
+  }
+
+  if (msg.text === '/view_all' && userId === ADMIN_ID) {
+    db.all(`SELECT telegram_id, points, purchases, total_spent, discount_level FROM users`, [], (err, rows) => {
+      let response = 'Все пользователи:\n';
+      rows.forEach(row => {
+        response += `${row.telegram_id}: Баллы ${row.points}, Потрачено ${row.total_spent}, Скидка ${getDiscount(row.discount_level) * 100}%, Покупки: ${row.purchases || 'Нет'}\n`;
+      });
+      bot.sendMessage(chatId, response || 'Нет данных', adminKeyboard());
+    });
+  }
+
+  if (msg.text === '/add_seller' && userId === ADMIN_ID) {
+    bot.sendMessage(chatId, 'Введите Telegram ID продавца:');
+    bot.once('message', (msg2) => {
+      const sellerId = parseInt(msg2.text);
+      if (!isNaN(sellerId)) {
+        db.run(`INSERT OR IGNORE INTO sellers (telegram_id) VALUES (?)`, [sellerId]);
+        bot.sendMessage(chatId, `Продавец ${sellerId} добавлен!`, adminKeyboard());
+      } else {
+        bot.sendMessage(chatId, 'Неверный ID!', adminKeyboard());
+      }
+    });
+  }
+
+  if (msg.text === '/remove_seller' && userId === ADMIN_ID) {
+    bot.sendMessage(chatId, 'Введите Telegram ID продавца для удаления:');
+    bot.once('message', (msg2) => {
+      const sellerId = parseInt(msg2.text);
+      if (!isNaN(sellerId)) {
+        db.run(`DELETE FROM sellers WHERE telegram_id = ?`, [sellerId]);
+        bot.sendMessage(chatId, `Продавец ${sellerId} удалён!`, adminKeyboard());
+      } else {
+        bot.sendMessage(chatId, 'Неверный ID!', adminKeyboard());
+      }
+    });
   }
 });
 
@@ -248,50 +289,10 @@ bot.on('callback_query', (query) => {
         db.run(`UPDATE users SET total_spent = ?, points = points + ?, purchases = purchases || ? WHERE telegram_id = ?`,
           [newTotalSpent, bonus, `\n${query.message.text} | ${delivery}`, userId], () => {
             bot.editMessageText(`Заказ подтверждён! Доставка: ${delivery}\nБонусы: +${bonus} (итого ${row.points + bonus})`, { chat_id: chatId, message_id: msgId });
-            SELLERS.forEach(sellerId => bot.sendMessage(sellerId, `Новый заказ от ${userId}: ${query.message.text} | ${delivery}`));
+            db.all(`SELECT telegram_id FROM sellers`, [], (err, sellers) => {
+              sellers.forEach(seller => bot.sendMessage(seller.telegram_id, `Новый заказ от ${userId}: ${query.message.text} | ${delivery}`));
+            });
           });
-      }
-    });
-  }
-});
-
-bot.onText(/\/view_all/, (msg) => {
-  if (msg.from.id === ADMIN_ID) {
-    db.all(`SELECT telegram_id, points, purchases, total_spent, discount_level FROM users`, [], (err, rows) => {
-      let response = 'Все пользователи:\n';
-      rows.forEach(row => {
-        response += `${row.telegram_id}: Баллы ${row.points}, Потрачено ${row.total_spent}, Скидка ${getDiscount(row.discount_level) * 100}%, Покупки: ${row.purchases || 'Нет'}\n`;
-      });
-      bot.sendMessage(msg.chat.id, response || 'Нет данных', adminKeyboard());
-    });
-  }
-});
-
-bot.onText(/\/add_seller/, (msg) => {
-  if (msg.from.id === ADMIN_ID) {
-    bot.sendMessage(msg.chat.id, 'Введите Telegram ID продавца:');
-    bot.once('message', (msg2) => {
-      const sellerId = parseInt(msg2.text);
-      if (!isNaN(sellerId)) {
-        db.run(`INSERT OR IGNORE INTO sellers (telegram_id) VALUES (?)`, [sellerId]);
-        bot.sendMessage(msg.chat.id, `Продавец ${sellerId} добавлен!`, adminKeyboard());
-      } else {
-        bot.sendMessage(msg.chat.id, 'Неверный ID!', adminKeyboard());
-      }
-    });
-  }
-});
-
-bot.onText(/\/remove_seller/, (msg) => {
-  if (msg.from.id === ADMIN_ID) {
-    bot.sendMessage(msg.chat.id, 'Введите Telegram ID продавца для удаления:');
-    bot.once('message', (msg2) => {
-      const sellerId = parseInt(msg2.text);
-      if (!isNaN(sellerId)) {
-        db.run(`DELETE FROM sellers WHERE telegram_id = ?`, [sellerId]);
-        bot.sendMessage(msg.chat.id, `Продавец ${sellerId} удалён!`, adminKeyboard());
-      } else {
-        bot.sendMessage(msg.chat.id, 'Неверный ID!', adminKeyboard());
       }
     });
   }
