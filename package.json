@@ -1,0 +1,12 @@
+{
+  "name": "minecraft-bot",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "main index.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.61.0",
+    "sqlite3": "^5.1.7"
+  }
+}
